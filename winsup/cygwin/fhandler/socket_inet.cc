@@ -420,6 +420,25 @@ fhandler_socket_wsock::wait_for_events (const long event_mask,
       switch (WSAWaitForMultipleEvents (ev_cnt, ev, FALSE, wfmo_timeout, FALSE))
 	{
 	  case WSA_WAIT_TIMEOUT:
+	    /* FD_WRITE is edge-triggered.  If its notification was lost, a
+	       blocking stream sender can otherwise wait forever even after
+	       the native socket has become writable.  Recheck only after an
+	       existing wait interval, and let send_internal retry the real
+	       send.  Do not change shared event state or send a probe: either
+	       could interfere with another waiter or a datagram protocol. */
+	    if ((event_mask & FD_WRITE) && get_socket_type () == SOCK_STREAM
+		&& connect_state () == connected)
+	      {
+		WSAPOLLFD pfd = { get_socket (), POLLWRNORM, 0 };
+		int poll_ret = WSAPoll (&pfd, 1, 0);
+		if (poll_ret == SOCKET_ERROR)
+		  return SOCKET_ERROR;
+		if (poll_ret > 0
+		    && (pfd.revents & (POLLWRNORM | POLLERR | POLLHUP | POLLNVAL)))
+		  return 0;
+	      }
+	    /* Account for the elapsed wait when not ready. */
+	    fallthrough;
 	  case WSA_WAIT_EVENT_0:
 	    if (timeout != INFINITE)
 	      timeout -= wfmo_timeout;
